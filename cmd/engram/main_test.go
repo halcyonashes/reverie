@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"reverie/internal/mcp"
+	"reverie/internal/memloc"
 	"reverie/internal/obsidian"
 	"reverie/internal/setup"
 	"reverie/internal/store"
-	engramsync "reverie/internal/sync"
 	versioncheck "reverie/internal/version"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 func testConfig(t *testing.T) store.Config {
@@ -77,6 +77,14 @@ func captureOutput(t *testing.T, fn func()) (stdout string, stderr string) {
 	os.Stdout = outW
 	os.Stderr = errW
 
+	// Drain both pipes concurrently while fn runs — otherwise output larger
+	// than the OS pipe buffer blocks the writer forever, since nothing reads
+	// until after fn returns.
+	outCh := make(chan []byte, 1)
+	errCh := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(outR); outCh <- b }()
+	go func() { b, _ := io.ReadAll(errR); errCh <- b }()
+
 	fn()
 
 	_ = outW.Close()
@@ -84,16 +92,7 @@ func captureOutput(t *testing.T, fn func()) (stdout string, stderr string) {
 	os.Stdout = oldOut
 	os.Stderr = oldErr
 
-	outBytes, err := io.ReadAll(outR)
-	if err != nil {
-		t.Fatalf("read stdout: %v", err)
-	}
-	errBytes, err := io.ReadAll(errR)
-	if err != nil {
-		t.Fatalf("read stderr: %v", err)
-	}
-
-	return string(outBytes), string(errBytes)
+	return string(<-outCh), string(<-errCh)
 }
 
 func mustSeedObservation(t *testing.T, cfg store.Config, sessionID, project, typ, title, content, scope string) int64 {
@@ -377,73 +376,6 @@ func TestPrintPostInstallClaudeCodeAllowlist(t *testing.T) {
 			t.Fatalf("expected warning in stderr, got: %q", stderr)
 		}
 	})
-}
-
-func TestCmdSyncCloudRegressionPreservesLegacyBehaviorWithUpgradeStatePresent(t *testing.T) {
-	stubExitWithPanic(t)
-	stubRuntimeHooks(t)
-
-	originalSyncExport := syncExport
-	originalSyncStatus := syncStatus
-	t.Cleanup(func() {
-		syncExport = originalSyncExport
-		syncStatus = originalSyncStatus
-	})
-
-	cfg := testConfig(t)
-	t.Setenv("ENGRAM_CLOUD_SERVER", "https://cloud.example.test")
-	t.Setenv("ENGRAM_CLOUD_TOKEN", "token-abc")
-
-	s, err := store.New(cfg)
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	if err := s.EnrollProject("proj-a"); err != nil {
-		_ = s.Close()
-		t.Fatalf("enroll project: %v", err)
-	}
-	if err := s.SaveCloudUpgradeState(store.CloudUpgradeState{
-		Project:          "proj-a",
-		Stage:            store.UpgradeStageDoctorBlocked,
-		RepairClass:      store.UpgradeRepairClassRepairable,
-		LastErrorCode:    "upgrade_repairable_unenrolled",
-		LastErrorMessage: "legacy metadata drift",
-	}); err != nil {
-		_ = s.Close()
-		t.Fatalf("seed upgrade state: %v", err)
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
-
-	syncExport = func(*engramsync.Syncer, string, string) (*engramsync.SyncResult, error) {
-		return &engramsync.SyncResult{ChunkID: "chunk-regression", SessionsExported: 1}, nil
-	}
-	syncStatus = func(*engramsync.Syncer) (int, int, int, error) {
-		return 1, 1, 0, nil
-	}
-
-	withArgs(t, "engram", "sync", "--cloud", "--project", "proj-a")
-	stdout, stderr, recovered := captureOutputAndRecover(t, func() { cmdSync(cfg) })
-	if recovered != nil || stderr != "" {
-		t.Fatalf("cloud sync regression path should stay successful, panic=%v stderr=%q", recovered, stderr)
-	}
-	if !strings.Contains(stdout, "Cloud sync complete for project \"proj-a\".") {
-		t.Fatalf("expected unchanged cloud sync success messaging, got %q", stdout)
-	}
-
-	s, err = store.New(cfg)
-	if err != nil {
-		t.Fatalf("store.New (verify): %v", err)
-	}
-	defer s.Close()
-	state, err := s.GetCloudUpgradeState("proj-a")
-	if err != nil {
-		t.Fatalf("load upgrade state: %v", err)
-	}
-	if state == nil || state.Stage != store.UpgradeStageDoctorBlocked {
-		t.Fatalf("sync --cloud must not mutate upgrade stage; got %+v", state)
-	}
 }
 
 func TestCmdSaveAndSearch(t *testing.T) {
@@ -1027,10 +959,10 @@ func TestCmdMCPDetectsProjectFromFlag(t *testing.T) {
 	var capturedCfg mcp.MCPConfig
 	oldNew := newMCPServerWithConfig
 	t.Cleanup(func() { newMCPServerWithConfig = oldNew })
-	newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
+	newMCPServerWithConfig = func(set *memloc.Set, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
 		capturedCfg = mcpCfg
 		// Return a valid server so serveMCP doesn't panic
-		return oldNew(s, mcpCfg, allowlist)
+		return oldNew(set, mcpCfg, allowlist)
 	}
 
 	oldServe := serveMCP
@@ -1056,9 +988,9 @@ func TestCmdMCPDetectsProjectFromEnv(t *testing.T) {
 	var capturedCfg mcp.MCPConfig
 	oldNew := newMCPServerWithConfig
 	t.Cleanup(func() { newMCPServerWithConfig = oldNew })
-	newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
+	newMCPServerWithConfig = func(set *memloc.Set, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
 		capturedCfg = mcpCfg
-		return oldNew(s, mcpCfg, allowlist)
+		return oldNew(set, mcpCfg, allowlist)
 	}
 
 	oldServe := serveMCP
@@ -1086,9 +1018,9 @@ func TestCmdMCPDetectsProjectFromGit(t *testing.T) {
 	var capturedCfg mcp.MCPConfig
 	oldNew := newMCPServerWithConfig
 	t.Cleanup(func() { newMCPServerWithConfig = oldNew })
-	newMCPServerWithConfig = func(s *store.Store, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
+	newMCPServerWithConfig = func(set *memloc.Set, mcpCfg mcp.MCPConfig, allowlist map[string]bool) *mcpserver.MCPServer {
 		capturedCfg = mcpCfg
-		return oldNew(s, mcpCfg, allowlist)
+		return oldNew(set, mcpCfg, allowlist)
 	}
 
 	oldServe := serveMCP

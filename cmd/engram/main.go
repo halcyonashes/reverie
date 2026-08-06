@@ -68,7 +68,7 @@ var (
 
 	newMCPServer           = mcp.NewServer
 	newMCPServerWithTools  = mcp.NewServerWithTools
-	newMCPServerWithConfig = mcp.NewServerWithConfig
+	newMCPServerWithConfig = mcp.NewServerWithLocations
 	resolveMCPTools        = mcp.ResolveTools
 	serveMCP               = mcpserver.ServeStdio
 
@@ -908,7 +908,7 @@ func cmdMCP(cfg store.Config) {
 
 	mcpCfg := mcp.MCPConfig{DefaultProject: projectOverride}
 	allowlist := resolveMCPTools(toolsFilter)
-	mcpSrv := mcp.NewServerWithLocations(set, mcpCfg, allowlist)
+	mcpSrv := newMCPServerWithConfig(set, mcpCfg, allowlist)
 
 	if err := serveMCP(mcpSrv); err != nil {
 		stopAutosync()
@@ -947,7 +947,7 @@ func cmdTUI(cfg store.Config) {
 
 func cmdSearch(cfg store.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: reverie search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]")
+		fmt.Fprintln(os.Stderr, "usage: engram search <query> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--limit N]")
 		exitFunc(1)
 	}
 
@@ -1023,7 +1023,7 @@ func cmdSearch(cfg store.Config) {
 
 func cmdSave(cfg store.Config) {
 	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: reverie save <title> <content> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--topic TOPIC_KEY]")
+		fmt.Fprintln(os.Stderr, "usage: engram save <title> <content> [--type TYPE] [--project PROJECT] [--scope SCOPE] [--topic TOPIC_KEY]")
 		exitFunc(1)
 	}
 
@@ -1094,7 +1094,7 @@ func cmdSave(cfg store.Config) {
 
 func cmdDelete(cfg store.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: reverie delete <observation_id> [--hard]")
+		fmt.Fprintln(os.Stderr, "usage: engram delete <observation_id> [--hard]")
 		fmt.Fprintln(os.Stderr, "       engram delete session  <id>")
 		fmt.Fprintln(os.Stderr, "       engram delete prompt   <id>")
 		fmt.Fprintln(os.Stderr, "       engram delete project  <name> [--hard]")
@@ -1118,7 +1118,7 @@ func cmdDelete(cfg store.Config) {
 
 func cmdDeleteObservation(cfg store.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: reverie delete <observation_id> [--hard]")
+		fmt.Fprintln(os.Stderr, "usage: engram delete <observation_id> [--hard]")
 		exitFunc(1)
 		return
 	}
@@ -1158,7 +1158,7 @@ func cmdDeleteObservation(cfg store.Config) {
 
 func cmdDeleteSession(cfg store.Config) {
 	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: reverie delete session <id>")
+		fmt.Fprintln(os.Stderr, "usage: engram delete session <id>")
 		exitFunc(1)
 		return
 	}
@@ -1181,7 +1181,7 @@ func cmdDeleteSession(cfg store.Config) {
 
 func cmdDeletePrompt(cfg store.Config) {
 	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: reverie delete prompt <id>")
+		fmt.Fprintln(os.Stderr, "usage: engram delete prompt <id>")
 		exitFunc(1)
 		return
 	}
@@ -1209,7 +1209,7 @@ func cmdDeletePrompt(cfg store.Config) {
 
 func cmdDeleteProject(cfg store.Config) {
 	if len(os.Args) < 4 {
-		fmt.Fprintln(os.Stderr, "usage: reverie delete project <name> [--hard]")
+		fmt.Fprintln(os.Stderr, "usage: engram delete project <name> [--hard]")
 		exitFunc(1)
 		return
 	}
@@ -1245,7 +1245,7 @@ func cmdDeleteProject(cfg store.Config) {
 
 func cmdTimeline(cfg store.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: reverie timeline <observation_id> [--before N] [--after N]")
+		fmt.Fprintln(os.Stderr, "usage: engram timeline <observation_id> [--before N] [--after N]")
 		exitFunc(1)
 	}
 
@@ -1415,7 +1415,7 @@ func cmdExport(cfg store.Config) {
 
 func cmdImport(cfg store.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: reverie import <file.json>")
+		fmt.Fprintln(os.Stderr, "usage: engram import <file.json>")
 		exitFunc(1)
 	}
 
@@ -1665,7 +1665,7 @@ func cmdSync(cfg store.Config) {
 }
 
 func printSyncUsage() {
-	fmt.Println("usage: reverie sync [--import | --status] [--all] [--cloud --project PROJECT]")
+	fmt.Println("usage: engram sync [--import | --status] [--all] [--cloud --project PROJECT]")
 	fmt.Println("Local sync exports project-scoped chunks to .engram/ by default.")
 	fmt.Println("Cloud sync requires an explicit --project and never runs from --help.")
 }
@@ -1866,7 +1866,7 @@ func cmdProjects(cfg store.Config) {
 		cmdProjectsList(cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown projects subcommand: %s\n", subCmd)
-		fmt.Fprintln(os.Stderr, "usage: reverie projects list")
+		fmt.Fprintln(os.Stderr, "usage: engram projects list")
 		fmt.Fprintln(os.Stderr, "       engram projects consolidate [--all] [--dry-run]")
 		fmt.Fprintln(os.Stderr, "       engram projects prune [--dry-run]")
 		exitFunc(1)
@@ -2424,7 +2424,7 @@ func cmdSetup(cfg store.Config) {
 		printSetupUsage()
 		return
 	case extraBareSeen:
-		fmt.Fprintln(os.Stderr, "usage: reverie setup [<agent>] [--protocol=slim|full]")
+		fmt.Fprintln(os.Stderr, "usage: engram setup [<agent>] [--protocol=slim|full]")
 		exitFunc(1)
 		return
 	case unknownFlagSeen:
@@ -2506,7 +2506,7 @@ func cmdSetupInteractive(cfg store.Config, mode string) {
 // MUST contain the literal "--protocol" (Guarantee 1); it must never read
 // stdin (Guarantee 2 — safe under a detached/non-TTY stdin).
 func printSetupUsage() {
-	fmt.Println("usage: reverie setup [<agent>] [--protocol=slim|full]")
+	fmt.Println("usage: engram setup [<agent>] [--protocol=slim|full]")
 	fmt.Println()
 	fmt.Println("Install an agent plugin (claude-code, opencode, codex, ...).")
 	fmt.Println("Without <agent>, shows an interactive menu.")
@@ -2555,7 +2555,7 @@ func applyProtocolMode(cfg store.Config, slug, mode string) {
 // line of stdout.
 func cmdProtocolMode(cfg store.Config) {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: reverie protocol-mode <slug>")
+		fmt.Fprintln(os.Stderr, "usage: engram protocol-mode <slug>")
 		exitFunc(1)
 		return
 	}
@@ -2662,7 +2662,7 @@ func printNextSteps(steps []string) {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func printUsage() {
-	fmt.Printf(`reverie v%s — Persistent memory for AI coding agents
+	fmt.Printf(`engram v%s — Persistent memory for AI coding agents
 
 Usage:
   engram <command> [arguments]

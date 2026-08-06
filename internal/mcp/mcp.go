@@ -251,7 +251,7 @@ func newServerWithActivityAndLocations(set *memloc.Set, cfg MCPConfig, allowlist
 		instructions += locationInstructions
 	}
 	srv := server.NewMCPServer(
-		"reverie",
+		"engram",
 		"0.1.0",
 		server.WithToolCapabilities(true),
 		server.WithInstructions(instructions),

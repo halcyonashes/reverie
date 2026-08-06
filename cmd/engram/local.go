@@ -26,7 +26,7 @@ func cmdLocal(_ store.Config) {
 	case "path":
 		localPath()
 	default:
-		fmt.Fprintln(os.Stderr, "usage: reverie local <init|status|path>")
+		fmt.Fprintln(os.Stderr, "usage: engram local <init|status|path>")
 		fmt.Fprintln(os.Stderr)
 		fmt.Fprintln(os.Stderr, "  init    create this repository's local memory store")
 		fmt.Fprintln(os.Stderr, "  status  show whether local memory is active, and where")
