@@ -153,7 +153,30 @@ async function isEngramRunning(): Promise<boolean> {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function extractProjectName(directory: string): string {
+/**
+ * Reject directories that can never name a project: the home directory, a
+ * dotfile directory, or a filesystem/volume root. Mirrors isNonProjectDir in
+ * internal/project/detect.go.
+ */
+function isNonProjectDir(directory: string): boolean {
+  let dir = directory.replace(/\\/g, "/")
+  if (!dir) return false
+  if (dir.length > 1 && dir.endsWith("/")) dir = dir.slice(0, -1)
+
+  // Filesystem or volume root: "/" or "C:".
+  if (dir === "/" || /^[A-Za-z]:$/.test(dir)) return true
+
+  for (const home of [process.env.HOME, process.env.USERPROFILE]) {
+    if (!home) continue
+    const normalized = home.replace(/\\/g, "/").replace(/\/$/, "")
+    if (normalized && dir === normalized) return true
+  }
+
+  // Dotfile directory.
+  return (dir.split("/").pop() ?? "").startsWith(".")
+}
+
+function extractProjectName(directory: string): string | null {
   // Try git remote origin URL
   try {
     const result = Bun.spawnSync(["git", "-C", directory, "remote", "get-url", "origin"])
@@ -175,8 +198,11 @@ function extractProjectName(directory: string): string {
     }
   } catch {}
 
-  // Final fallback: cwd basename
-  return directory.split("/").pop() ?? "unknown"
+  // Final fallback: cwd basename — but only when the directory can actually name
+  // a project. Declining is deliberate: inventing a name here files memories
+  // under buckets like the username or ".claude".
+  if (isNonProjectDir(directory)) return null
+  return directory.split("/").pop() ?? null
 }
 
 function truncate(str: string, max: number): string {
@@ -199,6 +225,11 @@ function stripPrivateTags(str: string): string {
 export const Engram: Plugin = async (ctx) => {
   const oldProject = ctx.directory.split("/").pop() ?? "unknown"
   const project = extractProjectName(ctx.directory)
+
+  // A directory that cannot name a project (home, dotfile, filesystem root) gets
+  // no Engram integration at all. Writing under an invented name scatters
+  // memories into buckets like the username or ".claude".
+  if (project === null) return {}
 
   // Track tool counts per session (in-memory only, not critical)
   const toolCounts = new Map<string, number>()

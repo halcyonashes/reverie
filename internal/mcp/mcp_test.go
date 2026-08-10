@@ -7452,3 +7452,88 @@ func TestHandleSearch_MatchModeInvalidError(t *testing.T) {
 		t.Fatalf("parameter-validation error must not contain query-advice suffix \"Try simpler keywords\", got: %s", text)
 	}
 }
+
+// ─── Unidentified-project guard ───────────────────────────────────────────────
+
+// mkDotfileCwd creates and enters a dotfile directory, which project detection
+// must refuse to name a project.
+func mkDotfileCwd(t *testing.T) string {
+	t.Helper()
+	dot := filepath.Join(t.TempDir(), ".claude")
+	if err := os.MkdirAll(dot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dot)
+	return dot
+}
+
+// TestHandleSave_DotfileCwdIsRejected asserts a save from a dotfile directory
+// fails with actionable guidance instead of inventing ".claude" as a project.
+func TestHandleSave_DotfileCwdIsRejected(t *testing.T) {
+	mkDotfileCwd(t)
+
+	s := newMCPTestStore(t)
+	h := handleSave(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
+
+	res, err := h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
+		"title":   "Decision",
+		"content": "Must not be filed under .claude",
+		"type":    "architecture",
+	}}})
+	if err != nil {
+		t.Fatalf("unexpected transport error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected an error result; got success: %s", callResultText(t, res))
+	}
+
+	m := callResultJSON(t, res)
+	if got := m["error_code"]; got != "unidentified_project" {
+		t.Errorf("error_code = %v; want unidentified_project (text=%s)", got, callResultText(t, res))
+	}
+	if hint, _ := m["hint"].(string); !strings.Contains(hint, "cd into the target repo") {
+		t.Errorf("hint missing remediation guidance, got %q", hint)
+	}
+
+	// The rejected basename must never become a project.
+	obs, err := s.RecentObservations(".claude", "architecture", 5)
+	if err != nil {
+		t.Fatalf("RecentObservations: %v", err)
+	}
+	if len(obs) != 0 {
+		t.Errorf("wrote %d observation(s) under %q; want none", len(obs), ".claude")
+	}
+}
+
+// TestHandleSave_DotfileCwdAcceptsExplicitProject asserts an explicit project is
+// the escape hatch when cwd cannot name one.
+func TestHandleSave_DotfileCwdAcceptsExplicitProject(t *testing.T) {
+	mkDotfileCwd(t)
+
+	s := newMCPTestStore(t)
+	if err := s.EnrollProject("real-project"); err != nil {
+		t.Fatalf("enroll project: %v", err)
+	}
+	h := handleSave(s, MCPConfig{}, NewSessionActivity(10*time.Minute))
+
+	res, err := h(context.Background(), mcppkg.CallToolRequest{Params: mcppkg.CallToolParams{Arguments: map[string]any{
+		"title":   "Decision",
+		"content": "Explicit project overrides an unidentifiable cwd",
+		"type":    "architecture",
+		"project": "real-project",
+	}}})
+	if err != nil || res.IsError {
+		t.Fatalf("save: err=%v isError=%v text=%s", err, res.IsError, callResultText(t, res))
+	}
+
+	if got := callResultJSON(t, res)["project"]; got != "real-project" {
+		t.Errorf("envelope project = %v; want real-project", got)
+	}
+	obs, err := s.RecentObservations("real-project", "architecture", 5)
+	if err != nil {
+		t.Fatalf("RecentObservations: %v", err)
+	}
+	if len(obs) == 0 {
+		t.Error("expected the observation under 'real-project'; got none")
+	}
+}

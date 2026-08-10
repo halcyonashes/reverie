@@ -2471,10 +2471,10 @@ func resolveSaveWriteProject(s *store.Store, projectChoice string, explicitProje
 	if trimmedProjectChoice != "" {
 		cwdRes, cwdErr := resolveWriteProject()
 		if cwdErr != nil {
-			if errors.Is(cwdErr, projectpkg.ErrInvalidConfig) {
+			switch {
+			case errors.Is(cwdErr, projectpkg.ErrInvalidConfig):
 				return cwdRes, cwdErr
-			}
-			if errors.Is(cwdErr, projectpkg.ErrAmbiguousProject) {
+			case errors.Is(cwdErr, projectpkg.ErrAmbiguousProject):
 				if normalized, colliding := normalizedProjectCollisions(cwdRes.AvailableProjects, trimmedProjectChoice); len(colliding) > 1 {
 					return cwdRes, &normalizedProjectCollisionError{
 						Name:              trimmedProjectChoice,
@@ -2482,7 +2482,11 @@ func resolveSaveWriteProject(s *store.Store, projectChoice string, explicitProje
 						CollidingProjects: colliding,
 					}
 				}
-			} else {
+			case errors.Is(cwdErr, projectpkg.ErrUnidentifiedProject):
+				// An explicit project is the documented escape hatch when cwd
+				// cannot name one. Fall through and validate the choice like any
+				// other override rather than failing on detection alone.
+			default:
 				return cwdRes, cwdErr
 			}
 		}
@@ -2530,16 +2534,20 @@ func resolveSaveWriteProject(s *store.Store, projectChoice string, explicitProje
 		}
 
 		if cwdErr != nil {
-			if errors.Is(cwdErr, projectpkg.ErrInvalidConfig) {
+			switch {
+			case errors.Is(cwdErr, projectpkg.ErrInvalidConfig):
 				return cwdRes, cwdErr
-			}
-			if errors.Is(cwdErr, projectpkg.ErrAmbiguousProject) {
+			case errors.Is(cwdErr, projectpkg.ErrAmbiguousProject):
 				if trimmedReason == projectpkg.SourceUserSelectedAfterAmbiguousProject {
 					return resolveWriteProjectWithChoice(projectChoice, reason, validateToken)
 				}
 				return cwdRes, cwdErr
+			case errors.Is(cwdErr, projectpkg.ErrUnidentifiedProject):
+				// Fall through to unknownProjectError below so the caller gets the
+				// list of real projects instead of a bare detection failure.
+			default:
+				return cwdRes, cwdErr
 			}
-			return cwdRes, cwdErr
 		}
 
 		if cwdRes.Source == projectpkg.SourceConfig {
@@ -2899,6 +2907,12 @@ func writeProjectErrorResult(activity *SessionActivity, sessionID string, res pr
 			res.AvailableProjects,
 		)
 	}
+	if errors.Is(err, projectpkg.ErrUnidentifiedProject) {
+		return errorWithMeta("unidentified_project",
+			fmt.Sprintf("Cannot determine project: %q is a home, dotfile, or filesystem-root directory and cannot name a project", res.Path),
+			res.AvailableProjects,
+		)
+	}
 	result := errorWithMeta(code, fmt.Sprintf("Cannot determine project: %s", err), res.AvailableProjects)
 	if code == "ambiguous_project" && activity != nil {
 		if strings.TrimSpace(sessionID) == "" {
@@ -2953,6 +2967,8 @@ func errorWithMeta(code, msg string, availableProjects []string) *mcp.CallToolRe
 		envelope["hint"] = "Request a fresh ambiguous_project recovery_token and retry with the same session, cwd context, and selected available_projects value before it expires."
 	case "unknown_project":
 		envelope["hint"] = "Use one of the available_projects values, or omit project to auto-detect."
+	case "unidentified_project":
+		envelope["hint"] = "cd into the target repo, or add .engram/config.json with project_name to that directory, or pass project explicitly. Do not retry with a directory-derived name."
 	case "invalid_project_config":
 		envelope["hint"] = "Fix .engram/config.json so project_name is a non-empty project name."
 	case "invalid_project":

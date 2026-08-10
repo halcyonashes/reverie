@@ -24,6 +24,17 @@ var ErrAmbiguousProject = errors.New("ambiguous project: multiple git repos foun
 // used as a project write lock.
 var ErrInvalidConfig = errors.New("invalid .engram/config.json")
 
+// ErrUnidentifiedProject is returned when the working directory can never name a
+// project — the home directory, a dotfile directory, or a filesystem root — and
+// no config or git evidence identifies one. Without this, the dir_basename
+// fallback invents names like the username or ".claude" and scatters writes
+// into buckets that do not correspond to any real project.
+var ErrUnidentifiedProject = errors.New("unidentified project: cwd is not a project directory")
+
+// userHomeDir is indirected so tests can exercise the home-directory guard
+// without depending on the real $HOME.
+var userHomeDir = os.UserHomeDir
+
 // Source constants describe how the project name was resolved.
 const (
 	SourceGitRemote        = "git_remote"        // derived from git remote origin URL
@@ -31,6 +42,7 @@ const (
 	SourceGitChild         = "git_child"         // auto-promoted from single child git repo
 	SourceDirBasename      = "dir_basename"      // fallback: directory basename
 	SourceAmbiguous        = "ambiguous"         // cwd contains multiple git repos (Case 4)
+	SourceUnidentified     = "unidentified"      // cwd cannot name a project (Case 5 rejected)
 	SourceExplicitOverride = "explicit_override" // JR2-2: caller explicitly supplied a project name
 	SourceSessionProject   = "session"           // caller supplied a session_id with an existing project
 	// SourceUserSelectedAfterAmbiguousProject means an MCP write initially hit
@@ -79,7 +91,8 @@ type DetectionResult struct {
 //  2. git_root   — cwd is inside a git repo → use repo root basename
 //  3. git_child  — cwd has exactly one git-repo child → auto-promote it
 //  4. ambiguous  — cwd has multiple git-repo children → return ErrAmbiguousProject
-//  5. dir_basename — none of the above → use filepath.Base(dir)
+//  5. dir_basename — none of the above → use filepath.Base(dir), unless dir is
+//     a home/dotfile/root directory, which yields ErrUnidentifiedProject
 func DetectProjectFull(dir string) DetectionResult {
 	if dir == "" {
 		dir = "."
@@ -160,6 +173,15 @@ func DetectProjectFull(dir string) DetectionResult {
 basename:
 	// ── Case 5: dir_basename ─────────────────────────────────────────────
 	absDir, _ := filepath.Abs(dir)
+	if isNonProjectDir(absDir) {
+		// Path stays populated so callers can name the directory they rejected.
+		return DetectionResult{
+			Project: "",
+			Source:  SourceUnidentified,
+			Path:    absDir,
+			Error:   ErrUnidentifiedProject,
+		}
+	}
 	base := filepath.Base(dir)
 	if base == "" || base == "." {
 		base = "unknown"
@@ -244,6 +266,27 @@ func invalidConfigResult(path string, err error) DetectionResult {
 		Path:    path,
 		Error:   fmt.Errorf("%w: %v", ErrInvalidConfig, err),
 	}
+}
+
+// isNonProjectDir reports whether absDir can never name a project: the user's
+// home directory, a dotfile directory, or a filesystem/volume root. It is
+// consulted only by Case 5, so config and git evidence always win over it.
+//
+// The dotfile rule is the same one scanChildren already applies to child
+// directories; this extends it to the target directory itself.
+func isNonProjectDir(absDir string) bool {
+	clean := canonicalizePath(absDir)
+	if clean == "" {
+		return false
+	}
+	// Filesystem or volume root: filepath.Dir is a fixed point ("/", "C:\").
+	if filepath.Dir(clean) == clean {
+		return true
+	}
+	if home, err := userHomeDir(); err == nil && canonicalizePath(home) == clean {
+		return true
+	}
+	return strings.HasPrefix(filepath.Base(clean), ".")
 }
 
 func canonicalizePath(path string) string {
@@ -342,6 +385,11 @@ func scanChildren(dir string) (repos []string, timedOut bool) {
 // never receive an empty string (design §9 backward-compat requirement).
 func DetectProject(dir string) string {
 	res := DetectProjectFull(dir)
+	if errors.Is(res.Error, ErrUnidentifiedProject) {
+		// Deliberately not the basename fallback used for ambiguity below: the
+		// basename is exactly what was just rejected as a project name.
+		return "unknown"
+	}
 	if errors.Is(res.Error, ErrAmbiguousProject) {
 		// CLI compat: return basename rather than empty string.
 		if dir == "" {

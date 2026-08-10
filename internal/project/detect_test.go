@@ -87,6 +87,19 @@ func initGit(t *testing.T, dir string) {
 	run("config", "user.name", "Test User")
 }
 
+// writeProjectConfig writes dir/.engram/config.json with the given project_name.
+func writeProjectConfig(t *testing.T, dir, projectName string) {
+	t.Helper()
+	configDir := filepath.Join(dir, ".engram")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"project_name":"` + projectName + `"}`)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDetectProject_GitRemote(t *testing.T) {
 	dir := t.TempDir()
 	initGit(t, dir)
@@ -730,5 +743,156 @@ func TestDetectProject_AmbiguousEmpty(t *testing.T) {
 	got := DetectProject(parent)
 	if got == "" {
 		t.Error("DetectProject must not return empty string on ambiguous cwd")
+	}
+}
+
+// ─── Non-project directory guard (home / dotfile / filesystem root) ───────────
+
+// withHomeDir points userHomeDir at dir for the duration of the test so the
+// home-directory guard can be exercised without touching the real $HOME.
+func withHomeDir(t *testing.T, dir string) {
+	t.Helper()
+	prev := userHomeDir
+	userHomeDir = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { userHomeDir = prev })
+}
+
+func TestIsNonProjectDir(t *testing.T) {
+	tmp := t.TempDir()
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	volumeRoot := filepath.VolumeName(tmp) + string(filepath.Separator)
+
+	ordinary := filepath.Join(tmp, "my-project")
+	dotfile := filepath.Join(tmp, ".claude")
+	dotfileNested := filepath.Join(tmp, "wrapper", ".config")
+	for _, dir := range []string{ordinary, dotfile, dotfileNested} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name string
+		dir  string
+		want bool
+	}{
+		{"home directory", home, true},
+		{"filesystem or volume root", volumeRoot, true},
+		{"dotfile directory", dotfile, true},
+		{"nested dotfile directory", dotfileNested, true},
+		{"ordinary directory", ordinary, false},
+		{"temp dir itself", tmp, false},
+		{"empty string", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNonProjectDir(tt.dir); got != tt.want {
+				t.Errorf("isNonProjectDir(%q) = %v; want %v", tt.dir, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDetectProjectFull_HomeDirIsUnidentified asserts the home directory never
+// becomes a project name (regression: saves from ~ were filed under the
+// username, e.g. "onax_").
+func TestDetectProjectFull_HomeDirIsUnidentified(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	res := DetectProjectFull(home)
+
+	if !errors.Is(res.Error, ErrUnidentifiedProject) {
+		t.Fatalf("Error = %v; want ErrUnidentifiedProject (source=%s project=%q)", res.Error, res.Source, res.Project)
+	}
+	if res.Project != "" {
+		t.Errorf("Project = %q; want empty on unidentified", res.Project)
+	}
+	if res.Source != SourceUnidentified {
+		t.Errorf("Source = %q; want %q", res.Source, SourceUnidentified)
+	}
+	if res.Path == "" {
+		t.Error("Path must remain populated so callers can report the rejected dir")
+	}
+}
+
+// TestDetectProjectFull_DotfileDirIsUnidentified asserts a config directory
+// never becomes a project name (regression: saves from ~/.claude were filed
+// under ".claude").
+func TestDetectProjectFull_DotfileDirIsUnidentified(t *testing.T) {
+	dot := filepath.Join(t.TempDir(), ".claude")
+	if err := os.MkdirAll(dot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := DetectProjectFull(dot)
+
+	if !errors.Is(res.Error, ErrUnidentifiedProject) {
+		t.Fatalf("Error = %v; want ErrUnidentifiedProject (source=%s project=%q)", res.Error, res.Source, res.Project)
+	}
+	if res.Project != "" {
+		t.Errorf("Project = %q; want empty on unidentified", res.Project)
+	}
+}
+
+// TestDetectProjectFull_DotfileDirInsideGitRepoUsesGitRoot asserts the guard is
+// confined to Case 5 and never preempts git evidence.
+func TestDetectProjectFull_DotfileDirInsideGitRepoUsesGitRoot(t *testing.T) {
+	repo := t.TempDir()
+	initGit(t, repo)
+	dot := filepath.Join(repo, ".config")
+	if err := os.MkdirAll(dot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := DetectProjectFull(dot)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Source != SourceGitRoot {
+		t.Errorf("Source = %q; want %q (git evidence must win over the guard)", res.Source, SourceGitRoot)
+	}
+	if want := strings.ToLower(filepath.Base(repo)); res.Project != want {
+		t.Errorf("Project = %q; want %q", res.Project, want)
+	}
+}
+
+// TestDetectProjectFull_HomeDirWithConfigUsesConfig asserts .engram/config.json
+// remains a working escape hatch for otherwise-unidentifiable directories.
+func TestDetectProjectFull_HomeDirWithConfigUsesConfig(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+	writeProjectConfig(t, home, "my-real-project")
+
+	res := DetectProjectFull(home)
+
+	if res.Error != nil {
+		t.Fatalf("unexpected error: %v", res.Error)
+	}
+	if res.Source != SourceConfig {
+		t.Errorf("Source = %q; want %q (config must win over the guard)", res.Source, SourceConfig)
+	}
+	if res.Project != "my-real-project" {
+		t.Errorf("Project = %q; want %q", res.Project, "my-real-project")
+	}
+}
+
+// TestDetectProject_HomeDirReturnsUnknown asserts the compat wrapper keeps its
+// never-empty contract without leaking the basename it just rejected.
+func TestDetectProject_HomeDirReturnsUnknown(t *testing.T) {
+	home := t.TempDir()
+	withHomeDir(t, home)
+
+	got := DetectProject(home)
+
+	if got != "unknown" {
+		t.Errorf("DetectProject(home) = %q; want %q", got, "unknown")
+	}
+	if got == strings.ToLower(filepath.Base(home)) {
+		t.Errorf("DetectProject leaked the rejected basename %q", got)
 	}
 }

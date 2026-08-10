@@ -22,6 +22,9 @@ PROJECT=$(detect_project "$CWD")
 # Nothing to capture if no output
 [ -z "$OUTPUT" ] && exit 0
 
+# Never write under an invented project name (see detect_project in _helpers.sh)
+[ -z "$PROJECT" ] && exit 0
+
 # Fire and forget — server handles extraction, dedup, and storage
 curl -sf "${ENGRAM_URL}/observations/passive" \
   -X POST \
